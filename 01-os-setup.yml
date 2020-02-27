@@ -1,0 +1,57 @@
+- hosts: all
+  become: yes
+  handlers:
+  - include: handlers.yml
+  tasks:
+  - name: set hostnames
+    hostname:
+      name={{ inventory_hostname_short }}
+
+  - name: add self to hosts file
+    lineinfile:
+      dest: /etc/hosts
+      line: "{{ hostvars[item].ansible_host }} {{ hostvars[item].inventory_hostname_short }}"
+      state: present
+    with_items: "{{ groups.all }}"
+
+  - name: Update all packages
+    yum:
+      name: '*'
+      state: latest
+
+  - name: deploy ssh keys
+    authorized_key:
+      user: ansible
+      key: "{{ lookup('file', 'files/ssh_keys/id_rsa_ansible.pub') }}"
+      state: present
+
+  - name: install chrony
+    yum:
+      name: chrony
+      state: latest
+
+  - name: set timezone
+    shell: /usr/bin/timedatectl set-ntp 0 && /usr/bin/timedatectl set-timezone Asia/Baku && /usr/bin/timedatectl set-ntp 1
+    notify: 
+    - restart chronyd
+
+  - name: enable and start chrony
+    systemd:
+      daemon_reload: yes
+      state: started
+      name: chronyd
+      enabled: yes
+
+  - name: disable password authentification
+    lineinfile:
+      path: /etc/ssh/sshd_config
+      regexp: "PasswordAuthentication"
+      line: "PasswordAuthentication no"
+
+  - name: disable Root login
+    lineinfile:
+      path: /etc/ssh/sshd_config
+      regexp: "PermitRootLogin"
+      line: "PermitRootLogin no"
+    notify:
+    - restart ssh

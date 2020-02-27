@@ -1,0 +1,81 @@
+- hosts: master01
+  become: yes
+  handlers:
+  - include: handlers.yml
+  tasks:
+  - name: copy certs on first master node
+    copy:
+      src: "{{ item.src }}"
+      dest: "{{ item.dest }}"
+    with_items:
+    - src: ./files/etcd/pki/apiserver-etcd-client.crt
+      dest: /etc/kubernetes/pki/
+    - src: ./files/etcd/pki/apiserver-etcd-client.key
+      dest: /etc/kubernetes/pki/
+    - src: ./files/etcd/pki/ca.crt
+      dest: /etc/kubernetes/pki/etcd/
+
+  - name: copy kubeadm-config to master nodes
+    copy:
+      src: ./files/control-plane/kubeadm/kubeadm-init-config.yml
+      dest: /tmp/kubeadm-init-config.yml
+
+  - name: initialize cluster
+    shell: /usr/bin/kubeadm init --ignore-preflight-errors=NumCPU --config /tmp/kubeadm-init-config.yml --experimental-upload-certs > ./cluster-init_$(date +%F).log
+
+  - name: copy admin.conf and ca.crt to localhost
+    fetch:
+      src: /etc/kubernetes/{{ item.src }}
+      dest: "{{ item.dest }}"
+      flat: yes
+    with_items:
+    - src: admin.conf
+      dest: ./files/kubeconfig/
+    - src: pki/ca.crt
+      dest: ./files/control-plane/pki/
+
+  - name: create .kube folder
+    file:
+      path: /root/.kube
+      state: directory
+
+  - name: copy admin conf to root's .kube
+    copy:
+      src: ./files/kubeconfig/admin.conf
+      dest: /root/.kube/config
+
+  - name: apply network
+    shell: /usr/bin/kubectl apply -f "https://cloud.weave.works/k8s/net?k8s-version=$(kubectl version | base64 | tr -d '\n')"
+
+- hosts: master01
+  become: yes
+  gather_facts: false
+  tasks:
+  - name: get join command
+    shell: /usr/bin/grep experimental-control-plane ./cluster-init_$(date +%F).log -B 2 | /usr/bin/sed 's/\\//g' | /usr/bin/tr -d '\n'
+    register: controller_join_command_raw
+
+  - name: set join command
+    set_fact:
+      controller_join_command: "{{ controller_join_command_raw.stdout_lines[0] }}"
+      
+  - name: add 1 to  /proc/sys/net/bridge/bridge-nf-call-iptables
+    shell: echo '1' >  /proc/sys/net/bridge/bridge-nf-call-iptables
+
+- hosts: master02, master03
+  become: yes
+  tasks:
+  - name: add 1 to  /proc/sys/net/bridge/bridge-nf-call-iptables
+    shell: echo '1' >  /proc/sys/net/bridge/bridge-nf-call-iptables
+
+  - name: join cluster
+    shell: "{{ hostvars['master01'].controller_join_command }} --ignore-preflight-errors=NumCPU  > ./controller-join_$(date +%F_%T).log"
+ 
+  - name: start haproxy and keepalived
+    systemd:
+      daemon_reload: yes
+      name: "{{ item }}"
+      state: started
+    with_items:
+    - keepalived
+    - haproxy

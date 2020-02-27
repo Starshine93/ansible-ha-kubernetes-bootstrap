@@ -1,0 +1,152 @@
+- hosts: etcd01
+  become: yes
+  tasks: 
+  - name: create ca certs
+    shell: /usr/bin/kubeadm init phase certs etcd-ca
+
+  - name: create apiserver-etcd-client certs
+    shell: /usr/bin/kubeadm init phase certs apiserver-etcd-client
+
+  - name: copy ca certs to localhost
+    fetch:
+      src: "{{ item }}"
+      dest: ./files/etcd/pki/
+      flat: yes
+    with_items:
+    - /etc/kubernetes/pki/etcd/ca.crt
+    - /etc/kubernetes/pki/etcd/ca.key
+
+  - name: copy apiserver-etcd-client certs to localhost
+    fetch:
+      src: "{{ item }}"
+      dest: ./files/etcd/pki/
+      flat: yes
+    with_items:
+    - /etc/kubernetes/pki/apiserver-etcd-client.crt
+    - /etc/kubernetes/pki/apiserver-etcd-client.key
+
+  - name: copy kubeadmcfg.yml
+    copy:
+      src: ./files/etcd/kubeadm-config/kubeadmcfg-dometcd01.yml
+      dest: /tmp/kubeadmcfg.yml
+      mode: 0744
+
+- hosts: etcd02
+  become: yes
+  tasks:
+  - name: copy kubeadmcfg.yml
+    copy:
+      src: ./files/etcd/kubeadm-config/kubeadmcfg-dometcd02.yml
+      dest: /tmp//kubeadmcfg.yml
+      mode: 0744
+
+- hosts: etcd03
+  become: yes
+  tasks: 
+  - name: copy kubeadmcfg.yml
+    copy:
+      src: ./files/etcd/kubeadm-config/kubeadmcfg-dometcd03.yml
+      dest: /tmp/kubeadmcfg.yml
+
+- hosts: etcd-cluster
+  become: yes
+  handlers:
+  - include: handlers.yml
+  tasks:
+  - name: open firewall ports
+    firewalld:
+      immediate: yes
+      permanent: yes
+      port: "{{ item }}/tcp"
+      state: enabled
+    with_items:
+    - 2379-2380
+    - 9100
+
+  - name: copy ca certs to etcd nodes
+    copy:
+      src: "{{ item }}"
+      dest: /etc/kubernetes/pki/etcd/
+    with_items:
+    - ./files/etcd/pki/ca.crt
+    - ./files/etcd/pki/ca.key
+
+  - name: copy apiserver-etcd-client certs to etcd nodes
+    copy:
+      src: "{{ item }}"
+      dest: /etc/kubernetes/pki/
+    with_items:
+    - ./files/etcd/pki/apiserver-etcd-client.crt
+    - ./files/etcd/pki/apiserver-etcd-client.key
+
+  - name: create physical volume and volume group
+    lvg:
+      vg: etcd
+      pvs: #/dev/disk/by-path/path-to-disk
+  
+  - name: create logical volume
+    lvol: 
+      vg: etcd
+      lv: etcd
+      size: 100%FREE
+  
+  - name: format logical volume
+    filesystem:
+      fstype: xfs
+      dev: /dev/mapper/etcd-etcd
+
+  - name: create kubelet and etcd systemd directory
+    file:
+      path: "{{ item }}"
+      state: directory
+    with_items:
+    - /var/lib/kubelet
+    - /var/lib/etcd
+  
+  - name: mount lv in etcd directory
+    mount:
+      path: /var/lib/etcd
+      src: /dev/mapper/etcd-etcd
+      fstype: xfs
+      state: mounted
+
+  - name: copy kubelet config
+    copy:
+      src: ./files/etcd/var-lib-kubelet-config.yaml
+      dest: /var/lib/kubelet/config.yaml
+  
+  - name: create kubelet systemd directory
+    file:
+      path: /etc/systemd/system/kubelet.service.d/
+      state: directory
+
+  - name: configure kubelet for etcd
+    copy:
+      src: ./files/etcd/etc-systemd-system-kubelet.service.d-20-etcd-service-manager.conf
+      dest: /etc/systemd/system/kubelet.service.d/20-etcd-service-manager.conf
+
+  - name: create etc-server cert
+    shell: /usr/bin/kubeadm init phase certs etcd-server --config=/tmp/kubeadmcfg.yml
+
+  - name: create etcd-peer cert
+    shell: /usr/bin/kubeadm init phase certs etcd-peer --config=/tmp/kubeadmcfg.yml
+  
+  - name: create etcd-healthcheck-client cert
+    shell: /usr/bin/kubeadm init phase certs etcd-healthcheck-client --config=/tmp/kubeadmcfg.yml
+
+  - name: restart kubelet
+    systemd:
+      daemon_reload: yes
+      name: kubelet
+      state: restarted
+
+  - name: initiate etcd cluster
+    shell: /usr/bin/kubeadm init phase etcd local --config=/tmp/kubeadmcfg.yml
+
+  - name: pause playbook execution
+    pause:
+      prompt: "Waiting until etcd cluster is bootstrapped..."
+      minutes: 2
+
+  - name: check etcd cluster
+    shell: /usr/bin/docker run --rm -it --net host -v /etc/kubernetes:/etc/kubernetes quay.io/coreos/etcd:v3.3.10 etcdctl --cert-file /etc/kubernetes/pki/etcd/peer.crt --key-file /etc/kubernetes/pki/etcd/peer.key --ca-file /etc/kubernetes/pki/etcd/ca.crt --endpoints https://$(/usr/bin/hostname):2379 cluster-health

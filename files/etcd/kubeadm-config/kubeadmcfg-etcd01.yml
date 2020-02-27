@@ -1,0 +1,20 @@
+apiVersion: kubeadm.k8s.io/v1beta1
+kind: ClusterConfiguration
+kubernetesVersion: v1.14.8
+etcd:
+  local:
+    serverCertSANs:
+    - ""         #Add etcd01 IP in this line
+    - ""         #Add etcd02 IP in this line
+    - ""         #Add etcd03 IP in this line
+    peerCertSANs:
+    - ""         #Add etcd01 IP in this line
+    extraArgs:
+      name: etcd01
+      initial-cluster: etcd01=https://IP:2380,etcd02=https://IP:2380,etcd03=https://IP:2380
+      initial-cluster-state: new
+      initial-cluster-token: dometcd-cluster
+      listen-client-urls: https://:2379                   #Add etcd01 IP in this line
+      advertise-client-urls: https://:2379                #Add etcd01 IP in this line
+      listen-peer-urls: https://:2380                     #Add etcd01 IP in this line
+      initial-advertise-peer-urls: https://:2380          #Add etcd01 IP in this line

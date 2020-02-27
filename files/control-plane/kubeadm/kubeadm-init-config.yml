@@ -1,0 +1,13 @@
+apiVersion: kubeadm.k8s.io/v1beta1
+kind: ClusterConfiguration
+kubernetesVersion: v1.14.8
+controlPlaneEndpoint: #your-vIP:443
+etcd:
+  external:
+    endpoints:
+    #- https://etcd01-ip:2379
+    #- https://etcd02-ip:2379
+    #- https://etcd03-ip:2379
+    caFile: /etc/kubernetes/pki/etcd/ca.crt
+    certFile: /etc/kubernetes/pki/apiserver-etcd-client.crt
+    keyFile: /etc/kubernetes/pki/apiserver-etcd-client.key

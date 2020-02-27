@@ -1,0 +1,15 @@
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+address: 0.0.0.0
+cgroupDriver: systemd
+staticPodPath: /etc/kubernetes/manifests
+authentication:
+  anonymous:
+    enabled: false
+  webhook:
+    enabled: false
+  x509:
+    clientCAFile: /etc/kubernetes/pki/etcd/ca.crt
+authorization:
+  mode: AlwaysAllow
+tlsMinVersion: VersionTLS12

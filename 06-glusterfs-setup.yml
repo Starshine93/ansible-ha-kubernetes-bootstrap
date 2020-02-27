@@ -1,0 +1,129 @@
+- hosts: worker-nodes
+  become: yes
+  tasks:
+  - name: install centos-release-gluster6 repo
+    yum:
+      name: centos-release-gluster6
+      state: present
+
+  - name: add fuse kernel module
+    modprobe:
+      name: fuse
+      state: present
+
+  - name: install glusterfs client tools
+    yum:
+      name: [ glusterfs, glusterfs-fuse ]
+      state: present
+
+- hosts: glusterfs-nodes
+  become: yes
+  tasks:
+  - name: create physical volumes and volume groups
+    lvg:
+      vg: glusterfs-{{ item.vg }}
+      pvs: "{{ item.pv }}"
+    with_items:
+    - vg: #volume-group-name
+      pv: #/dev/disk/by-path/path-to-disk
+
+  - name: create logical volumes for glusterfs
+    lvol:
+      vg: glusterfs-{{ item }}
+      lv: glusterfs-{{ item }}
+      size: 100%FREE
+    with_items:
+    - #volume-name
+
+  - name: format glusterfs logical volumes with xfs filesystem
+    filesystem:
+      dev: /dev/mapper/glusterfs--{{ item }}-glusterfs--{{ item }}
+      fstype: xfs
+      opts: -i size=512
+    with_items:
+    - #volume-name
+
+  - name: create directories for glusterfs volumes and bricks
+    file:
+      path: /data/glusterfs/{{ item }}/brick-01
+      state: directory
+    with_items:
+    - #glusterfs-directory-name
+
+  - name: mount glusterfs logical volumes
+    mount:
+      path: /data/glusterfs/{{ item.folder }}/brick-01
+      src: /dev/mapper/glusterfs--{{ item.lv }}-glusterfs--{{ item.lv }}
+      fstype: xfs
+      opts: rw,inode64,noatime,nouuid
+      dump: '1'
+      passno: '2'
+      state: mounted
+    with_items:
+    - folder: #folder-name
+      lv: #logical-volume-name
+
+  - name: disable swap
+    shell: /usr/sbin/swapoff -a
+
+  - name: remove swapfile from /etc/fstab
+    mount:
+      path: swap
+      fstype: swap
+      state: absent
+
+  - name: install centos-release-gluster6 repo
+    yum:
+      name: centos-release-gluster6
+      state: present
+
+  - name: install glusterfs
+    yum:
+      name: [ glusterfs, glusterfs-cli, glusterfs-libs, glusterfs-server ]
+      state: present
+
+  - name: start glusterd
+    systemd:
+      name: glusterd
+      enabled: yes
+      state: started
+
+  - name: open firewall ports for glusterfs
+    firewalld:
+      immediate: yes
+      offline: yes
+      permanent: yes
+      port: "{{ item }}/tcp"
+      state: enabled
+    with_items:
+    - 8080
+    - 9100
+    - 24007-24008
+    - 49152-49157
+
+- hosts: glusterfs01
+  become: yes
+  tasks:
+  - name: add glusterfs servers to cluster
+    shell: /usr/sbin/gluster peer probe domglusterfs02 && /usr/sbin/gluster peer probe domglusterfs03
+
+- hosts: glusterfs02
+  become: yes
+  tasks:
+  - name: probe first server 
+    shell: /usr/sbin/gluster peer probe domglusterfs01
+
+  - name: create glusterfs volumes set options
+    gluster_volume:
+      name: "{{ item }}"
+      bricks: /data/glusterfs/{{ item }}/brick-01/brick
+      state: present
+      replicas: 3
+      cluster:
+      - glusterfs01
+      - glusterfs02
+      - glusterfs03
+      options:
+        auth.allow: worker01,worker02,worker03
+    with_items:
+    - #name-of-glusterfs-folder

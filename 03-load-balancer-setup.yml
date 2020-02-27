@@ -1,0 +1,217 @@
+- hosts: localhost
+  become: yes
+  tasks:
+  - name: download keepalived, haproxy and lua source tarballs
+    get_url:
+      url: "{{ item.url }}"
+      dest: ./files/control-plane/{{ item.folder }}
+    with_items:
+    - url: https://www.keepalived.org/software/keepalived-2.0.19.tar.gz
+      folder: keepalived
+    - url: https://www.lua.org/ftp/lua-5.3.5.tar.gz
+      folder: haproxy
+    - url: http://www.haproxy.org/download/2.0/src/haproxy-2.0.9.tar.gz
+      folder: haproxy
+
+- hosts: master-nodes
+  become: yes
+  handlers:
+  - include: handlers.yml
+  tasks:
+  - name: unpack source tarballs
+    unarchive:
+      src: ./files/control-plane/{{ item }}
+      dest: $HOME
+      owner: root
+      group: root
+    with_items:
+    - keepalived/keepalived-2.0.19.tar.gz
+    - haproxy/lua-5.3.5.tar.gz
+    - haproxy/haproxy-2.0.9.tar.gz
+
+  - name: install keepalived and haproxy dependencies
+    yum:
+      name: [ psmisc, gcc, openssl-devel, libnl3-devel, ipset-devel, iptables-devel, readline-devel, systemd-devel ]
+      state: latest
+
+  - name: build keepalived from source
+    shell: ./configure --prefix=/usr/ --sysconfdir=/etc/ && /usr/bin/make && /usr/bin/make install
+    args:
+      chdir: $HOME/keepalived-2.0.19
+
+  - name: sysctl for haproxy
+    sysctl:
+      name: net.ipv4.ip_nonlocal_bind
+      value: 1
+      state: present
+      ignoreerrors: yes
+      sysctl_set: yes
+
+  - name: create haproxy group
+    group:
+      name: haproxy
+      gid: 188
+      state: present
+
+  - name: create haproxy user
+    user:
+      name: haproxy
+      uid: 188
+      group: haproxy
+      home: /var/lib/haproxy
+      shell: /sbin/nologin
+      comment: HAProxy Load Balancer
+      state: present
+
+  - name: create haproxy etc directory
+    file:
+      path: /etc/haproxy
+      state: directory
+
+  - name: copy haproxy dhparam file
+    copy:
+      src: ./files/control-plane/haproxy/etc-haproxy-haproxy-dhparam-2048.pem
+      dest: /etc/haproxy/haproxy-dhparam-2048.pem
+      mode: 0400
+
+  - name: copy haproxy config
+    copy:
+      src: ./files/control-plane/haproxy/haproxy.cfg
+      dest: /etc/haproxy/haproxy.cfg
+      mode: 0644
+    tags:
+      - haproxy-config
+
+  - name: copy haproxy unit file
+    copy:
+      src: ./files/control-plane/haproxy/usr-lib-systemd-system-haproxy.service
+      dest: /usr/lib/systemd/system/haproxy.service
+
+  - name: create haproxy chroot and dev directory
+    file:
+      path: /var/lib/{{ item }}
+      state: directory
+      owner: haproxy
+      group: haproxy
+    with_items:
+    - haproxy
+    - haproxy/dev
+
+  - name: copy haproxy rsyslog file
+    copy:
+      src: ./files/control-plane/haproxy/etc-rsyslog.d-haproxy.conf
+      dest: /etc/rsyslog.d/haproxy.conf
+    notify:
+    - restart rsyslog
+
+  - name: build lua from source
+    shell: /usr/bin/make linux
+    args:
+      chdir: $HOME/lua-5.3.5
+
+  - name: build haproxy from source
+    shell: /usr/bin/make -j $(nproc) TARGET=linux-glibc USE_OPENSSL=1 USE_ZLIB=1 USE_LUA=1 LUA_INC=../lua-5.3.5/src LUA_LIB=../lua-5.3.5/src USE_PCRE=1 USE_SYSTEMD=1 EXTRA_OBJS="contrib/prometheus-exporter/service-prometheus.o" && make install PREFIX=/usr
+    args:
+      chdir: $HOME/haproxy-2.0.9
+
+  - name: delete unneded files from remote
+    file:
+      path: $HOME/{{ item }}
+      state: absent
+    with_items:
+    - keepalived-2.0.19
+    - lua-5.3.5
+    - haproxy-2.0.9
+
+  - name: uninstall uneeded packages
+    yum:
+      name: [ gcc, openssl-devel, libnl3-devel, ipset-devel, iptables-devel, readline-devel, systemd-devel ]
+      state: absent
+      autoremove: yes
+
+- hosts: localhost
+  become: yes
+  tasks:
+  - name: delete unneded files from local
+    file:
+      path: ./files/control-plane/{{ item }}
+      state: absent
+    with_items:
+    - keepalived/keepalived-2.0.19.tar.gz
+    - haproxy/lua-5.3.5.tar.gz
+    - haproxy/haproxy-2.0.9.tar.gz
+
+- hosts: dommaster01
+  become: yes
+  handlers:
+  - include: handlers.yml
+  tasks:
+  - name: copy keepalived config
+    copy:
+      src: files/control-plane/keepalived/keepalived-dommaster01.conf
+      dest: /etc/keepalived/keepalived.conf
+      mode: 0644
+    notify:
+    - restart keepalived
+
+- hosts: dommaster02
+  become: yes
+  handlers:
+  - include: handlers.yml
+  tasks:
+  - name: copy keepalived config
+    copy:
+      src: files/control-plane/keepalived/keepalived-dommaster02.conf
+      dest: /etc/keepalived/keepalived.conf
+      mode: 0644
+    notify:
+    - restart keepalived
+
+- hosts: dommaster03
+  become: yes
+  handlers:
+  - include: handlers.yml
+  tasks:
+  - name: copy keepalived config
+    copy:
+      src: files/control-plane/keepalived/keepalived-dommaster03.conf
+      dest: /etc/keepalived/keepalived.conf
+      mode: 0644
+    notify:
+    - restart keepalived
+
+- hosts: master-nodes
+  become: yes
+  handlers:
+  - include: handlers.yml
+  tasks:
+  - name: start keepalived and haproxy
+    systemd:
+      daemon_reload: yes
+      name: "{{ item }}"
+      enabled: yes
+      state: started
+    with_items:
+    - keepalived
+    - haproxy
+
+- hosts: dommaster02, dommaster03
+  become: yes
+  tasks:
+  - name: stop keepalived and haproxy everywhere except first controller
+    systemd:
+      daemon_reload: yes
+      name: "{{ item }}"
+      state: stopped
+    with_items:
+    - keepalived
+    - haproxy
+
+- hosts: master-nodes
+  become: yes
+  tasks:
+  - name: restart haproxy
+    systemd:
+      daemon_reload: yes
+      name: haproxy
+      state: restarted

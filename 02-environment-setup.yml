@@ -1,0 +1,144 @@
+- hosts: all
+  become: yes
+  tasks:
+  - name: disable selinux
+    selinux:
+      state: disabled
+  
+  - name: reboot all machines
+    reboot:
+      msg: "Rebooting all machines"
+    tags:
+    - selinux
+
+- hosts: kubernetes-cluster
+  become: yes
+  tasks:
+  - name: enable masquerade on kubernetes nodes
+    firewalld:
+      immediate: yes
+      permanent: yes
+      masquerade: yes
+      state: enabled
+
+  - name: open firewall ports for weave-net
+    firewalld:
+      immediate: yes
+      permanent: yes
+      port: "{{ item }}"
+      state: enabled
+    with_items:
+    - 6783/tcp
+    - 6783/udp
+    - 6784/udp
+  
+- hosts: kubernetes-cluster, etcd-cluster
+  become: yes
+  handlers:
+  - include: handlers.yml
+  tasks:
+  - name: open firewall port for kubelet
+    firewalld:
+      immediate: yes
+      permanent: yes
+      port: 10250/tcp
+      state: enabled
+
+  - name: disable swap space
+    shell: /usr/sbin/swapoff -a
+
+  - name: remove swapfile from /etc/fstab
+    mount:
+      path: swap
+      fstype: swap
+      state: absent
+
+  - name: ensure correct sysctl values are defined
+    sysctl:
+      name: "{{ item }}"
+      value: 1
+      state: present
+    with_items:
+    - net.ipv4.ip_forward
+
+  - name: add Docker repository
+    yum_repository:
+      name: docker-ce
+      description: Docker repo
+      baseurl: https://download.docker.com/linux/centos/7/x86_64/stable/
+      gpgkey: https://download.docker.com/linux/centos/gpg
+      gpgcheck: yes
+
+  - name: install Docker
+    yum:
+      name: containerd.io-1.2.10, docker-ce-19.03.4, docker-ce-cli-19.03.4
+      state: present
+
+  - name: create Docker folder
+    file:
+      path: /etc/docker
+      state: directory
+  
+  - name: add daemon.json file
+    copy:
+      src: files/environment/daemon.json
+      dest: /etc/docker/daemon.json
+
+  - name: restart Docker
+    systemd:
+      name: docker
+      state: reloaded
+  
+  - name: enable docker
+    systemd:
+      daemon_reload: yes
+      name: docker
+      enabled: yes
+
+  - name: add Kubernetes repository
+    yum_repository:
+      name: Kubernetes
+      description: k8s repo
+      baseurl: https://packages.cloud.google.com/yum/repos/kubernetes-el7-x86_64
+      gpgkey: https://packages.cloud.google.com/yum/doc/yum-key.gpg https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+      gpgcheck: yes
+
+  - name: install kubernetes
+    yum:
+      name:  [ kubelet-1.14.8, kubeadm-1.14.8 ]
+      state: present
+      allow_downgrade: yes
+
+  - name: enable kubelet
+    systemd:
+      daemon_reload: yes
+      name: kubelet
+      enabled: yes
+      
+- hosts: master-nodes
+  become: yes
+  tasks:
+  - name: open firewall ports
+    firewalld:
+      immediate: yes
+      permanent: yes
+      port: "{{ item }}/tcp"
+      state: enabled
+    with_items:
+    - 443
+    - 6443
+    - 8404
+    - 10251-10252
+
+- hosts: worker-nodes
+  become: yes
+  tasks:
+  - name: open firewall ports on worker-nodes
+    firewalld:
+      immediate: yes
+      permanent: yes
+      port: "{{ item }}/tcp"
+      state: enabled
+    with_items:
+    - 443
+    - 80
