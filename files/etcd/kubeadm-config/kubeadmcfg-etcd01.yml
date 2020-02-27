@@ -13,7 +13,7 @@ etcd:
       name: etcd01
       initial-cluster: etcd01=https://IP:2380,etcd02=https://IP:2380,etcd03=https://IP:2380
       initial-cluster-state: new
-      initial-cluster-token: dometcd-cluster
+      initial-cluster-token: etcd-cluster
       listen-client-urls: https://:2379                   #Add etcd01 IP in this line
       advertise-client-urls: https://:2379                #Add etcd01 IP in this line
       listen-peer-urls: https://:2380                     #Add etcd01 IP in this line
